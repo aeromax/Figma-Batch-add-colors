@@ -1,0 +1,8 @@
+<!doctype html>
+<meta charset="utf-8" />
+<script>
+  window.onmessage = (event) => {
+    const { type, message } = event.data.pluginMessage || {};
+    if (type === 'done') parent.postMessage({ pluginMessage: { type: 'close' } }, '*');
+  };
+</script>

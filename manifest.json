@@ -1,0 +1,8 @@
+{
+  "name": "Add Selected Swatches to Variables",
+  "id": "add-selected-swatches-to-variables",
+  "api": "1.0.0",
+  "editorType": ["figma", "figjam"],
+  "main": "code.js",
+  "ui": "ui.html"
+}
