@@ -35,24 +35,51 @@ function nodePathName(node: SceneNode): string {
   return sanitizeName(parts.reverse().join(" / "));
 }
 
-function findFirstSolid(node: SceneNode): Paint | null {
+function findFirstSolid(node: SceneNode): SolidPaint | null {
   if ("fills" in node && Array.isArray(node.fills)) {
     const fills = node.fills as Paint[];
-    const p = fills.find(p => p.type === "SOLID" && (p as SolidPaint).visible !== false);
+    const p = fills.find(p => p.type === "SOLID" && (p as SolidPaint).visible !== false) as SolidPaint | undefined;
     if (p) return p;
   }
   return null;
 }
 
+function approxArea(n: SceneNode): number {
+  try {
+    // Bounding box area is good enough for swatches
+    const w = (n as any).width ?? 0;
+    const h = (n as any).height ?? 0;
+    return Math.max(0, Number(w) * Number(h));
+  } catch (_e) {
+    return 0;
+  }
+}
+
 function findPaintedDescendant(node: SceneNode): { painted: SceneNode, paint: SolidPaint } | null {
-  const paint = findFirstSolid(node) as SolidPaint | null;
-  if (paint) return { painted: node, paint };
-  if ("children" in node) {
-    for (const child of node.children as readonly SceneNode[]) {
-      const found = findPaintedDescendant(child);
-      if (found) return found;
+  // Prefer solid fills on basic geometry (likely the swatch), pick the largest area
+  const preferredTypes = new Set<SceneNode["type"]>([
+    "RECTANGLE","ELLIPSE","POLYGON","STAR","VECTOR","BOOLEAN_OPERATION","LINE"
+  ]);
+
+  let best: { painted: SceneNode, paint: SolidPaint, area: number } | null = null;
+
+  function visit(n: SceneNode) {
+    const paint = findFirstSolid(n);
+    if (paint) {
+      const typeOk = preferredTypes.has(n.type);
+      const area = approxArea(n);
+      const score = (typeOk ? 10_000 : 0) + area; // strong bias toward preferred types
+      if (!best || score > best.area) {
+        best = { painted: n, paint, area: score };
+      }
+    }
+    if ("children" in n) {
+      for (const c of (n.children as readonly SceneNode[])) visit(c);
     }
   }
+
+  visit(node);
+  if (best) return { painted: best.painted, paint: best.paint };
   return null;
 }
 
@@ -63,6 +90,33 @@ function toRGBA(paint: SolidPaint): RGBA {
     b: paint.color.b,
     a: paint.opacity === undefined ? 1 : paint.opacity
   };
+}
+
+function resolveRGBAFromPaint(paint: SolidPaint): RGBA {
+  // If fill is bound to a variable, try to resolve its value; otherwise use the paint color
+  const bv: any = (paint as any).boundVariables;
+  const colorRef = bv?.color;
+  if (colorRef) {
+    let varId: string | null = null;
+    if (typeof colorRef === "string") {
+      varId = colorRef;
+    } else if (typeof colorRef === "object" && colorRef && "id" in colorRef) {
+      varId = String(colorRef.id);
+    }
+    if (varId) {
+      const v = figma.variables.getVariableById(varId);
+      if (v) {
+        const col = figma.variables.getLocalVariableCollections().find(c => c.id === v.variableCollectionId);
+        const modeForVar = col?.defaultModeId ?? Object.keys((v as any).valuesByMode ?? {})[0];
+        const val = (v as any).valuesByMode?.[modeForVar];
+        if (val && typeof val.r === "number" && typeof val.g === "number" && typeof val.b === "number") {
+          // Ensure alpha is present
+          return { r: val.r, g: val.g, b: val.b, a: typeof val.a === "number" ? val.a : 1 } as RGBA;
+        }
+      }
+    }
+  }
+  return toRGBA(paint);
 }
 
 function findVariableByNameInCollection(name: string, colId: string): Variable | undefined {
@@ -96,7 +150,7 @@ async function run() {
     const name = sanitizeName(nodePathName(node));
     if (!name) { skipped++; continue; }
 
-    const rgba = toRGBA(found.paint);
+    const rgba = resolveRGBAFromPaint(found.paint);
     let variable = findVariableByNameInCollection(name, collection.id);
 
     if (!variable) {
